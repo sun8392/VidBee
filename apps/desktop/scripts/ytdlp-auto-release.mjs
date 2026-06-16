@@ -87,18 +87,54 @@ const getAuthHeaders = () => {
   }
 }
 
+const fetchWithRetry = async (url, options, maxRetries = 3) => {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, options)
+
+      // 403 通常表示速率限制，尝试重试
+      if (response.status === 403 && attempt < maxRetries) {
+        const retryAfter = response.headers.get('X-RateLimit-Reset')
+        if (retryAfter) {
+          const waitTime = (parseInt(retryAfter, 10) * 1000 - Date.now()) + 1000
+          if (waitTime > 0 && waitTime < 120000) {
+            console.error(`[retry] Rate limit hit. Waiting ${Math.ceil(waitTime / 1000)}s before retry ${attempt}/${maxRetries}...`)
+            await new Promise((resolve) => setTimeout(resolve, waitTime))
+            continue
+          }
+        }
+        // 如果没有 X-RateLimit-Reset 头，等待固定时间
+        console.error(`[retry] Rate limit (403). Waiting 30s before retry ${attempt}/${maxRetries}...`)
+        await new Promise((resolve) => setTimeout(resolve, 30000))
+        continue
+      }
+
+      return response
+    } catch (error) {
+      if (attempt < maxRetries) {
+        console.error(`[retry] Request failed: ${error.message}. Retrying ${attempt}/${maxRetries}...`)
+        await new Promise((resolve) => setTimeout(resolve, 5000 * attempt))
+      } else {
+        throw error
+      }
+    }
+  }
+}
+
 const fetchLatestYtDlpVersion = async (overrideVersion) => {
   if (overrideVersion) {
     return normalizeVersion(overrideVersion)
   }
 
-  const response = await fetch('https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest', {
-    headers: getAuthHeaders()
-  })
+  const response = await fetchWithRetry(
+    'https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest',
+    { headers: getAuthHeaders() }
+  )
 
   if (!response.ok) {
+    const body = await response.text().catch(() => '')
     throw new Error(
-      `Failed to fetch yt-dlp latest release: ${response.status} ${response.statusText}`
+      `Failed to fetch yt-dlp latest release: ${response.status} ${response.statusText}. ${body.slice(0, 300)}`
     )
   }
 
