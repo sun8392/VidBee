@@ -88,9 +88,13 @@ const getAuthHeaders = () => {
 }
 
 const fetchWithRetry = async (url, options, maxRetries = 3) => {
+  let lastResponse = null
+  let lastError = null
+
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const response = await fetch(url, options)
+      lastResponse = response
 
       // 403 通常表示速率限制，尝试重试
       if (response.status === 403 && attempt < maxRetries) {
@@ -109,16 +113,39 @@ const fetchWithRetry = async (url, options, maxRetries = 3) => {
         continue
       }
 
-      return response
+      // 成功响应或非 403 错误，立即返回
+      if (response.ok || attempt === maxRetries) {
+        return response
+      }
+
+      // 其他客户端错误（4xx），不重试
+      if (response.status >= 400 && response.status < 500) {
+        return response
+      }
+
+      // 服务器错误（5xx），尝试重试
+      if (attempt < maxRetries) {
+        console.error(`[retry] Server error ${response.status}. Retrying ${attempt}/${maxRetries}...`)
+        await new Promise((resolve) => setTimeout(resolve, 5000 * attempt))
+        continue
+      }
     } catch (error) {
+      lastError = error
       if (attempt < maxRetries) {
         console.error(`[retry] Request failed: ${error.message}. Retrying ${attempt}/${maxRetries}...`)
         await new Promise((resolve) => setTimeout(resolve, 5000 * attempt))
-      } else {
-        throw error
       }
     }
   }
+
+  // 所有重试都用完，抛出最后一次错误（如果有）或返回最后一次响应
+  if (lastError) {
+    throw lastError
+  }
+  if (lastResponse) {
+    return lastResponse
+  }
+  throw new Error(`Request to ${url} failed after ${maxRetries} retries with no response`)
 }
 
 const fetchLatestYtDlpVersion = async (overrideVersion) => {
